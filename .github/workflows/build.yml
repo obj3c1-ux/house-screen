@@ -8,6 +8,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: house-screen-app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -25,9 +28,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: house-screen
-          path: house-screen.apk
+          path: house-screen-app/house-screen.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: House Screen (latest)
-          files: house-screen.apk
+          files: house-screen-app/house-screen.apk
