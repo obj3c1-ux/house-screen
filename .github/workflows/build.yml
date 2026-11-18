@@ -8,11 +8,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: house-screen-app
     steps:
       - uses: actions/checkout@v4
+      - name: Find the app
+        run: |
+          echo "Files in the repo:"; find . -path ./.git -prune -o -type f -print | head -50
+          S="$(find . -path ./.git -prune -o -name 'settings.gradle*' -print | head -1)"
+          if [ -z "$S" ]; then echo "NO settings.gradle FOUND - the app files are not in the repo"; exit 1; fi
+          echo "APP=$(dirname "$S")" >> "$GITHUB_ENV"
+          echo "App folder: $(dirname "$S")"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,16 +31,18 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Build
+        working-directory: ${{ env.APP }}
         run: gradle assembleRelease --no-daemon --stacktrace
       - name: Name the file
-        run: cp app/build/outputs/apk/release/app-release.apk house-screen.apk
+        working-directory: ${{ env.APP }}
+        run: cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/house-screen.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: house-screen
-          path: house-screen-app/house-screen.apk
+          path: house-screen.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: House Screen (latest)
           make_latest: true
-          files: house-screen-app/house-screen.apk
+          files: house-screen.apk
