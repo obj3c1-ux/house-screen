@@ -46,6 +46,9 @@ import android.widget.TextView;
 public class MainActivity extends Activity {
     static final String[] ROOMS = {"bedroom", "loft", "door"};
     static final String[] ROOM_NAMES = {"Bedroom (main)", "Loft / bar (big tablet)", "Front door"};
+    static final String HOST = "https://aurelius.obj3c1.workers.dev";
+    String lastError = "", micStatus = "Mic: off";
+    MicStreamer mic;
 
     WebView web;
     TextView banner;
@@ -55,7 +58,7 @@ public class MainActivity extends Activity {
     int cornerTaps = 0;
     long cornerFirst = 0;
     int fails = 0;
-    boolean loadedOk = false;
+    boolean loadedOk = false, httpFail = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -117,8 +120,17 @@ public class MainActivity extends Activity {
 
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView v, String url) {
-                loadedOk = true; fails = 0; banner.setVisibility(View.GONE);
+                loadedOk = true; fails = 0; if (!httpFail) banner.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
+            }
+            @Override public void onReceivedHttpError(WebView v, WebResourceRequest r, android.webkit.WebResourceResponse resp) {
+                if (r != null && r.isForMainFrame() && resp != null) {
+                    int code = resp.getStatusCode();
+                    loadedOk = true; httpFail = true;
+                    showBanner(code == 403 ? "The house said no to this screen's code (403). Tap the top-left corner 7 times and check the code."
+                            : "The house answered with an error (" + code + "). It will try again.", 0);
+                    if (code != 403) retryLater();
+                }
             }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
                 if (r != null && r.isForMainFrame()) retryLater();
@@ -128,6 +140,10 @@ public class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return false; }
         });
         web.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                if (m != null && m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) noteError(m.message() + " @" + m.lineNumber());
+                return false;
+            }
             @Override public void onPermissionRequest(final PermissionRequest req) {
                 // the page may use this tablet's microphone (sound reactions, talking at the door)
                 h.post(new Runnable() { public void run() { try { req.grant(req.getResources()); } catch (Exception ignored) { } } });
@@ -137,14 +153,52 @@ public class MainActivity extends Activity {
 
     String room() { return prefs.getString("room", "bedroom"); }
 
-    void load() {
-        String u = prefs.getString("url", "").trim();
-        if (u.isEmpty()) return;
+    /** what was typed: just the pairing code, or the whole link */
+    static String linkFrom(String typed) {
+        String u = typed == null ? "" : typed.trim().replace(" ", "");
+        if (u.isEmpty()) return "";
+        if (u.matches("(?i)[0-9a-f]{12}([0-9a-f]{52})?")) return HOST + "/display?k=" + u.toLowerCase();
         if (!u.startsWith("http")) u = "https://" + u;
+        return u;
+    }
+
+    void load() {
+        String u = linkFrom(prefs.getString("url", ""));
+        if (u.isEmpty()) return;
         String sep = u.contains("?") ? "&" : "?";
         u = u + sep + "room=" + room() + "&app=1";
-        loadedOk = false;
+        loadedOk = false; httpFail = false;
         web.loadUrl(u);
+        startMic(u);
+    }
+
+    void startMic(String link) {
+        if (mic != null) { mic.shutdown(); mic = null; }
+        if (!prefs.getBoolean("mic", true)) { micStatus = "Mic: off (turned off in setup)"; return; }
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { micStatus = "Mic: waiting for permission"; return; }
+        mic = new MicStreamer(link, room(), new MicStreamer.Status() { public void set(String st) { micStatus = st; } });
+        mic.start();
+    }
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) { String u = linkFrom(prefs.getString("url", "")); if (!u.isEmpty()) startMic(u); }
+    }
+
+    void showBanner(String text, long hideAfterMs) {
+        banner.setText(text);
+        banner.setVisibility(View.VISIBLE);
+        if (hideAfterMs > 0) h.postDelayed(new Runnable() { public void run() { banner.setVisibility(View.GONE); } }, hideAfterMs);
+    }
+    void noteError(final String msg) {
+        h.post(new Runnable() { public void run() {
+            boolean first = lastError.isEmpty();
+            lastError = msg == null ? "" : msg;
+            if (first) showBanner("Page error: " + lastError, 20_000);
+        } });
+    }
+    static String engine(WebView w) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/([0-9.]+)").matcher(w.getSettings().getUserAgentString());
+        return m.find() ? m.group(1) : "unknown";
     }
 
     void retryLater() {
@@ -211,11 +265,11 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(48, 24, 48, 8);
         TextView l1 = new TextView(this);
-        l1.setText("Screen link (the same /display?k=… link the Fire TV opens)");
+        l1.setText("Screen code: the 12-letter pairing code from the dashboard (or the whole /display?k=… link)");
         box.addView(l1);
         final EditText url = new EditText(this);
         url.setSingleLine(true);
-        url.setHint("https://….workers.dev/display?k=…");
+        url.setHint("e.g. b4cf2880ac44");
         url.setText(prefs.getString("url", ""));
         box.addView(url);
         TextView l2 = new TextView(this);
@@ -232,13 +286,23 @@ public class MainActivity extends Activity {
         }
         if (g.getCheckedRadioButtonId() == -1) g.check(1000);
         box.addView(g);
+        final android.widget.CheckBox micBox = new android.widget.CheckBox(this);
+        micBox.setText("Send this tablet's microphone to Aurelius (so she hears this room)");
+        micBox.setChecked(prefs.getBoolean("mic", true));
+        box.addView(micBox);
+        TextView info = new TextView(this);
+        info.setText("\nWeb engine: Chrome " + engine(web) + "   ·   " + Build.MANUFACTURER + " " + Build.MODEL + " (Android " + Build.VERSION.RELEASE + ")"
+                + "\n" + micStatus
+                + (lastError.isEmpty() ? "" : "\nLast page error: " + lastError));
+        info.setTextSize(12);
+        box.addView(info);
         AlertDialog.Builder d = new AlertDialog.Builder(this)
                 .setTitle("House screen setup")
                 .setView(box)
                 .setCancelable(!first)
                 .setPositiveButton("Save", (di, w) -> {
                     int idx = g.getCheckedRadioButtonId() - 1000;
-                    prefs.edit().putString("url", url.getText().toString().trim())
+                    prefs.edit().putString("url", url.getText().toString().trim()).putBoolean("mic", micBox.isChecked())
                             .putString("room", ROOMS[Math.max(0, Math.min(ROOMS.length - 1, idx))]).apply();
                     load();
                     hideBars();
@@ -255,6 +319,7 @@ public class MainActivity extends Activity {
     @Override protected void onPause() { super.onPause(); }
     @Override protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
+        if (mic != null) mic.shutdown();
         try { if (wake != null && wake.isHeld()) wake.release(); } catch (Exception ignored) { }
         super.onDestroy();
     }
@@ -266,5 +331,6 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String device() { return Build.MANUFACTURER + " " + Build.MODEL; }
         @JavascriptInterface public void reload() { h.post(MainActivity.this::load); }
         @JavascriptInterface public void settings() { h.post(() -> showSettings(false)); }
+        @JavascriptInterface public void jsError(String m) { noteError(m); }
     }
 }
