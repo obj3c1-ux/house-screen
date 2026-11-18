@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'au.house.screen'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'au.house.screen'
+        minSdk 22            // Fire OS 5 (older Fire tablets) and up
+        targetSdk 34
+        versionCode (System.getenv('GITHUB_RUN_NUMBER') ? System.getenv('GITHUB_RUN_NUMBER').toInteger() : 1)
+        versionName '1.' + (System.getenv('GITHUB_RUN_NUMBER') ?: '0')
+    }
+
+    // one fixed key, so every new build installs straight over the old one
+    signingConfigs {
+        house {
+            storeFile file('house.keystore')
+            storePassword 'housescreen'
+            keyAlias 'house'
+            keyPassword 'housescreen'
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            signingConfig signingConfigs.house
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.house
+        }
+    }
+
+    buildFeatures {
+        buildConfig false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
