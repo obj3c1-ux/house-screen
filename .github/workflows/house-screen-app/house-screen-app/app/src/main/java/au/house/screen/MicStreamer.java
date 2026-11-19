@@ -1,6 +1,9 @@
 package au.house.screen;
 
+import android.content.Context;
 import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.net.Uri;
@@ -8,6 +11,7 @@ import android.net.Uri;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.DataInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -26,11 +30,12 @@ class MicStreamer extends Thread {
 
     private final String link, room;
     private final Status status;
+    private final Context ctx;
     private volatile boolean running = true;
 
-    MicStreamer(String link, String room, Status status) {
+    MicStreamer(Context ctx, String link, String room, Status status) {
         super("house-mic");
-        this.link = link; this.room = room; this.status = status;
+        this.ctx = ctx.getApplicationContext(); this.link = link; this.room = room; this.status = status;
         setDaemon(true);
     }
 
@@ -49,6 +54,49 @@ class MicStreamer extends Thread {
             try { Thread.sleep(wait); } catch (InterruptedException ie) { if (!running) break; }
             wait = Math.min(60000, wait * 2);
         }
+    }
+
+    /** her replies come back down the same connection: S (start: "rate channels"), D (sound), E (end), X (stop now) */
+    private void playLoop(Socket s) {
+        AudioTrack track = null;
+        try {
+            DataInputStream in = new DataInputStream(s.getInputStream());
+            while (running) {
+                int type = in.readUnsignedByte();
+                int len = in.readInt();
+                byte[] buf = new byte[Math.max(0, len)];
+                in.readFully(buf);
+                if (type == 'S') {
+                    if (track != null) { try { track.stop(); track.release(); } catch (Exception ignored) { } }
+                    String[] p = new String(buf, "UTF-8").trim().split(" ");
+                    int rate = Integer.parseInt(p[0]), ch = p.length > 1 ? Integer.parseInt(p[1]) : 1;
+                    int cfg = ch == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
+                    int min = AudioTrack.getMinBufferSize(rate, cfg, AudioFormat.ENCODING_PCM_16BIT);
+                    track = new AudioTrack(AudioManager.STREAM_MUSIC, rate, cfg, AudioFormat.ENCODING_PCM_16BIT, Math.max(min * 2, rate), AudioTrack.MODE_STREAM);
+                    wakeVolume();
+                    track.play();
+                } else if (type == 'D' && track != null) {
+                    track.write(buf, 0, buf.length);
+                } else if (type == 'E' && track != null) {
+                    try { track.stop(); } catch (Exception ignored) { }        // plays out what was written, then stops
+                } else if (type == 'X' && track != null) {
+                    try { track.pause(); track.flush(); track.stop(); } catch (Exception ignored) { }
+                }
+            }
+        } catch (Exception e) {
+            // the connection closed: the mic side reconnects
+        } finally {
+            if (track != null) { try { track.release(); } catch (Exception ignored) { } }
+        }
+    }
+
+    /** a silent tablet would make her mute: if the media volume is right down, bring it up to about 60% */
+    private void wakeVolume() {
+        try {
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (am.getStreamVolume(AudioManager.STREAM_MUSIC) < max / 4) am.setStreamVolume(AudioManager.STREAM_MUSIC, (int) (max * .6), 0);
+        } catch (Exception ignored) { }
     }
 
     private JSONObject askWorker() throws Exception {
@@ -89,8 +137,12 @@ class MicStreamer extends Thread {
             StringBuilder ok = new StringBuilder(); int ch;
             while ((ch = in.read()) != -1 && ch != '\n' && ok.length() < 40) ok.append((char) ch);
             if (!ok.toString().startsWith("OK")) throw new Exception("the Pi refused the tablet (" + ok + ")");
+            s.setSoTimeout(0);              // replies can come at any time: the voice reader waits as long as it needs
             rec.startRecording();
             status.set("Mic: sending to Aurelius (" + ip + ")");
+            final Socket sock = s;
+            Thread player = new Thread(new Runnable() { public void run() { playLoop(sock); } }, "house-voice");
+            player.setDaemon(true); player.start();
             byte[] buf = new byte[chunk * 2];
             while (running) {
                 int got = 0;
