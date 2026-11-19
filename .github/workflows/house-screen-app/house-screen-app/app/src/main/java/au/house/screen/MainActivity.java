@@ -176,7 +176,7 @@ public class MainActivity extends Activity {
         if (mic != null) { mic.shutdown(); mic = null; }
         if (!prefs.getBoolean("mic", true)) { micStatus = "Mic: off (turned off in setup)"; return; }
         if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { micStatus = "Mic: waiting for permission"; return; }
-        mic = new MicStreamer(link, room(), new MicStreamer.Status() { public void set(String st) { micStatus = st; } });
+        mic = new MicStreamer(this, link, room(), new MicStreamer.Status() { public void set(String st) { micStatus = st; } });
         mic.start();
     }
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
